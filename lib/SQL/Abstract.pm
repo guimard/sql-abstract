@@ -210,13 +210,13 @@ sub _assert_pass_injection_guard {
 
 sub insert {
   my $self    = shift;
-  my $table   = $self->_table(shift);
+  my ($table_sql, @table_bind) = $self->_table(shift);
   my $data    = shift || return;
   my $options = shift;
 
   my $method       = $self->_METHOD_FOR_refkind("_insert", $data);
   my ($sql, @bind) = $self->$method($data);
-  $sql = join " ", $self->_sqlcase('insert into'), $table, $sql;
+  $sql = join " ", $self->_sqlcase('insert into'), $table_sql, $sql;
 
   if ($options->{returning}) {
     my ($s, @b) = $self->_insert_returning($options);
@@ -224,7 +224,7 @@ sub insert {
     push @bind, @b;
   }
 
-  return wantarray ? ($sql, @bind) : $sql;
+  return wantarray ? ($sql, @table_bind, @bind) : $sql;
 }
 
 # So that subclasses can override INSERT ... RETURNING separately from
@@ -362,13 +362,13 @@ sub _insert_value {
 
 sub update {
   my $self    = shift;
-  my $table   = $self->_table(shift);
+  my ($table, @all_bind) = $self->_table(shift);
   my $data    = shift || return;
   my $where   = shift;
   my $options = shift;
 
   # first build the 'SET' part of the sql statement
-  my (@set, @all_bind);
+  my @set;
   puke "Unsupported data type specified to \$sql->update"
     unless ref $data eq 'HASH';
 
@@ -450,20 +450,20 @@ sub _update_returning { shift->_returning(@_) }
 
 sub select {
   my $self   = shift;
-  my $table  = $self->_table(shift);
+  my ($table_sql, @table_bind)  = $self->_table(shift);
   my $fields = shift || '*';
   my $where  = shift;
   my $order  = shift;
 
-  my($where_sql, @bind) = $self->where($where, $order);
+  my($where_sql, @where_bind) = $self->where($where, $order);
 
   my $f = (ref $fields eq 'ARRAY') ? join ', ', map { $self->_quote($_) } @$fields
                                    : $fields;
   my $sql = join(' ', $self->_sqlcase('select'), $f,
-                      $self->_sqlcase('from'),   $table)
+                      $self->_sqlcase('from'),   $table_sql)
           . $where_sql;
 
-  return wantarray ? ($sql, @bind) : $sql;
+  return wantarray ? ($sql, @table_bind, @where_bind) : $sql;
 }
 
 #======================================================================
@@ -473,20 +473,21 @@ sub select {
 
 sub delete {
   my $self    = shift;
-  my $table   = $self->_table(shift);
+  my ($table_sql, @all_bind) = $self->_table(shift);
   my $where   = shift;
   my $options = shift;
 
-  my($where_sql, @bind) = $self->where($where);
-  my $sql = $self->_sqlcase('delete from') . " $table" . $where_sql;
+  my($where_sql, @where_bind) = $self->where($where);
+  my $sql = $self->_sqlcase('delete from') . " $table_sql" . $where_sql;
+  push @all_bind, @where_bind;
 
   if ($options->{returning}) {
     my ($returning_sql, @returning_bind) = $self->_delete_returning($options);
     $sql .= $returning_sql;
-    push @bind, @returning_bind;
+    push @all_bind, @returning_bind;
   }
 
-  return wantarray ? ($sql, @bind) : $sql;
+  return wantarray ? ($sql, @all_bind) : $sql;
 }
 
 # So that subclasses can override DELETE ... RETURNING separately from
@@ -1396,6 +1397,11 @@ sub _table  {
   my $from = shift;
   $self->_SWITCH_refkind($from, {
     ARRAYREF     => sub {join ', ', map { $self->_quote($_) } @$from;},
+    ARRAYREFREF  => sub {
+      my ($sql, @bind) = @$$from;
+      $self->_assert_bindval_matches_bindtype(@bind);
+      return ($sql, @bind);
+    },
     SCALAR       => sub {$self->_quote($from)},
     SCALARREF    => sub {$$from},
   });
